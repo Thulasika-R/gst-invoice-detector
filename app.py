@@ -1,6 +1,6 @@
 """
 GST Invoice Anomaly Detection Dashboard
-Powered by Scikit-Learn Isolation Forest & Google Gemini 1.5 Flash Multimodal OCR
+Powered by Scikit-Learn Isolation Forest & Enterprise Document Processing Engine
 """
 
 import io
@@ -18,19 +18,19 @@ from sklearn.preprocessing import StandardScaler
 from pydantic import BaseModel, Field
 import typing
 
-# Optional Gemini SDK import with graceful fallback
+# Optional Document Processing Vision Engine import with graceful fallback
 try:
     import google.generativeai as genai
-    GEMINI_AVAILABLE = True
+    DOC_SCANNER_AVAILABLE = True
 except ImportError:
     genai = None
-    GEMINI_AVAILABLE = False
+    DOC_SCANNER_AVAILABLE = False
 
 # ==============================================================================
 # Page Configuration & Styling
 # ==============================================================================
 st.set_page_config(
-    page_title="GST Invoice Anomaly Detector | Isolation Forest & Gemini OCR",
+    page_title="GST Invoice Anomaly Detector | Enterprise Audit Pipeline",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -104,7 +104,7 @@ ML_FEATURE_COLS = [
 ]
 
 # ==============================================================================
-# Pydantic Schema for Gemini Multimodal Structured OCR
+# Pydantic Schema for Structured Document Processing Engine
 # ==============================================================================
 class ExtractedInvoiceSchema(BaseModel):
     invoice_number: str = Field(description="Unique Invoice Number or Bill reference")
@@ -120,19 +120,25 @@ class ExtractedInvoiceSchema(BaseModel):
     total_amount: float = Field(default=0.0, description="Grand total invoice payable amount")
 
 # ==============================================================================
-# Gemini 1.5 Flash Vision Multimodal Extraction
+# Enterprise Document Processing Engine Multimodal Extraction
 # ==============================================================================
 def extract_invoice_from_image(uploaded_file, api_key: str = None) -> dict:
     """
-    Sends an invoice image (PNG/JPG/JPEG) or PDF to Google Gemini 1.5 Flash
+    Sends an invoice image (PNG/JPG/JPEG) or PDF to the Document Processing Engine
     using structured JSON output mode to extract invoice fields.
     """
-    if not GEMINI_AVAILABLE:
-        raise RuntimeError("The 'google-generativeai' package is not installed. Please install it via pip.")
+    if not DOC_SCANNER_AVAILABLE:
+        raise RuntimeError("Document processing vision libraries are not installed in the environment.")
 
-    active_key = api_key or os.environ.get("GEMINI_API_KEY") or getattr(st, "secrets", {}).get("GEMINI_API_KEY", "")
+    active_key = (
+        api_key
+        or os.environ.get("DOCUMENT_AI_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+        or getattr(st, "secrets", {}).get("DOCUMENT_AI_API_KEY", "")
+        or getattr(st, "secrets", {}).get("GEMINI_API_KEY", "")
+    )
     if not active_key:
-        raise ValueError("GEMINI_API_KEY is not configured. Please supply an API key in the sidebar.")
+        raise ValueError("Document Processing Engine API Key is not configured. Please supply an API key in the sidebar.")
 
     genai.configure(api_key=active_key)
 
@@ -193,7 +199,7 @@ def extract_invoice_from_image(uploaded_file, api_key: str = None) -> dict:
                 return json.loads(json_match.group())
             return json.loads(raw_text)
         except Exception as fallback_err:
-            raise RuntimeError(f"Gemini Extraction failed: {str(e)} | Fallback: {str(fallback_err)}")
+            raise RuntimeError(f"Document extraction failed: {str(e)} | Fallback: {str(fallback_err)}")
 
 # ==============================================================================
 # Numeric Standardization & Data Pipeline Integration
@@ -304,8 +310,8 @@ def run_gst_feature_engineering(df: pd.DataFrame, baseline_df: pd.DataFrame = No
         axis=1
     )
 
-    # General interstate check validation: checks whether supplier_gstin[:2] != receiver_gstin[:2] aligns with IGST vs (CGST + SGST)
-    data["interstate_check"] = data.apply(
+    # State Tax Rule Violation validation: checks whether supplier_gstin[:2] != receiver_gstin[:2] aligns with IGST vs (CGST + SGST)
+    data["state_tax_rule_violation"] = data.apply(
         lambda r: 1.0 if (
             (not r["is_intrastate"] and (r["CGST Rate"] > 0 or r["SGST Rate"] > 0)) or
             (r["is_intrastate"] and r["IGST Rate"] > 0) or
@@ -313,6 +319,7 @@ def run_gst_feature_engineering(df: pd.DataFrame, baseline_df: pd.DataFrame = No
         ) else 0.0,
         axis=1
     )
+    data["interstate_check"] = data["state_tax_rule_violation"]
 
     # 3. Arithmetic Discrepancy Validation (tax_math_error)
     data["expected_tax"] = data.apply(
@@ -457,51 +464,52 @@ def evaluate_invoice_anomaly(
     }
 
 def generate_human_readable_reasons(row: pd.Series) -> list[str]:
-    """Inspects invoice data against Indian GST statutory rules to produce human-readable explanation flags."""
+    """Inspects invoice data against Indian GST statutory rules to produce professional human-readable explanations."""
     reasons = []
 
-    # 1. Tax-to-amount ratio check
-    tax_ratio = row.get("tax_ratio", row.get("tax_to_amount_ratio", 0.0))
+    # 1. Math Mismatch
+    math_err = row.get("tax_math_error", row.get("total_amt_error", 0.0))
     taxable_val = row.get("Taxable Value", 0.0)
     total_tax = row.get("Total Tax", 0.0)
-    if taxable_val > 0:
-        if tax_ratio > 0.35:
-            reasons.append(f"Tax-to-amount ratio abnormal: Recorded tax ratio is {tax_ratio * 100.0:.1f}%, exceeding the statutory maximum Indian GST rate of 28%.")
-        elif tax_ratio == 0.0 and taxable_val > 5000:
-            reasons.append(f"Tax-to-amount ratio abnormal: Total Tax is ₹0.00 for taxable value ₹{taxable_val:,.2f} on HSN {row.get('Line-Item HSN Code', '')}.")
 
-    # 2. Mathematical calculation discrepancies
-    math_err = row.get("tax_math_error", row.get("total_amt_error", 0.0))
     if math_err > 5.0:
         expected_tot = row.get("expected_total", taxable_val + total_tax)
         reasons.append(
-            f"Mathematical mismatch in total amount: Recorded Amount ₹{row['Total Amount']:,.2f} != Taxable Value + Total Tax (expected ₹{expected_tot:,.2f}, discrepancy ₹{math_err:,.2f})."
+            f"Math Mismatch: Recorded Grand Total ₹{row['Total Amount']:,.2f} does not match Taxable Value + Total Tax (expected ₹{expected_tot:,.2f}, discrepancy ₹{math_err:,.2f})."
         )
 
     if row.get("tax_calc_error", 0) > 5.0:
         reasons.append(
-            f"Tax Calculation Discrepancy: Recorded Total Tax ₹{row['Total Tax']:,.2f} differs from calculated slab tax ₹{row.get('expected_tax', 0.0):,.2f} (Discrepancy: ₹{row['tax_calc_error']:,.2f})."
+            f"Math Mismatch: Recorded Total Tax ₹{row['Total Tax']:,.2f} deviates from slab schedule calculation ₹{row.get('expected_tax', 0.0):,.2f} (discrepancy ₹{row['tax_calc_error']:,.2f})."
         )
 
-    # 3. State & Interstate Place of Supply validation
+    # 2. State Tax Mismatch / Rule Violations
     supp_state = row.get("supp_state", "")
     recv_state = row.get("recv_state", "")
     supp_name = STATE_MAP.get(supp_state, f"State {supp_state}")
     recv_name = STATE_MAP.get(recv_state, f"State {recv_state}")
 
-    if row.get("interstate_violation", 0) > 0 or (row.get("interstate_check", 0) > 0 and supp_state != recv_state):
-        reasons.append(f"Interstate IGST rule violated: Transaction is interstate between {supp_name} ({supp_state}) and {recv_name} ({recv_state}), but CGST ({row.get('CGST Rate')}%) / SGST ({row.get('SGST Rate')}%) was levied instead of IGST.")
+    if row.get("interstate_violation", 0) > 0 or (row.get("state_tax_rule_violation", 0) > 0 and supp_state != recv_state):
+        reasons.append(f"State Tax Mismatch: Interstate transaction between {supp_name} ({supp_state}) and {recv_name} ({recv_state}) incorrectly levied CGST ({row.get('CGST Rate')}%) / SGST ({row.get('SGST Rate')}%) instead of Integrated GST (IGST).")
 
-    if row.get("intrastate_violation", 0) > 0 or (row.get("interstate_check", 0) > 0 and supp_state == recv_state):
+    if row.get("intrastate_violation", 0) > 0 or (row.get("state_tax_rule_violation", 0) > 0 and supp_state == recv_state):
         if row.get("IGST Rate", 0) > 0:
-            reasons.append(f"Intrastate Tax Violation: Both parties reside in {supp_name} ({supp_state}), but IGST ({row.get('IGST Rate')}%) was charged instead of equal CGST + SGST.")
+            reasons.append(f"State Tax Mismatch: Intrastate transaction within {supp_name} ({supp_state}) levied IGST ({row.get('IGST Rate')}%) instead of balanced CGST and SGST.")
         if row.get("cgst_sgst_diff", 0) > 0.01:
-            reasons.append(f"Asymmetric Tax Split: CGST ({row.get('CGST Rate')}%) != SGST ({row.get('SGST Rate')}%). Indian GST law mandates a 50:50 equal revenue split.")
+            reasons.append(f"State Tax Mismatch: Asymmetric split between CGST ({row.get('CGST Rate')}%) and SGST ({row.get('SGST Rate')}%). Statutory guidelines mandate an equal 50:50 distribution.")
 
-    # 4. HSN Outlier
+    # 3. Tax Ratio Abnormal
+    tax_ratio = row.get("tax_ratio", row.get("tax_to_amount_ratio", 0.0))
+    if taxable_val > 0:
+        if tax_ratio > 0.35:
+            reasons.append(f"Tax Ratio Deviation: Recorded tax ratio is {tax_ratio * 100.0:.1f}%, exceeding the statutory GST slab ceiling of 28%.")
+        elif tax_ratio == 0.0 and taxable_val > 5000:
+            reasons.append(f"Tax Ratio Deviation: Total Tax is ₹0.00 for commercial taxable value ₹{taxable_val:,.2f} on HSN {row.get('Line-Item HSN Code', '')}.")
+
+    # 4. HSN Baseline Outlier
     if row.get("hsn_val_zscore", 0) > 3.0:
         reasons.append(
-            f"Extreme Value Outlier for HSN {row['Line-Item HSN Code']}: Taxable value ₹{row['Taxable Value']:,.2f} is {row['hsn_val_zscore']:.1f} standard deviations above cohort norm."
+            f"HSN Baseline Outlier: Taxable value ₹{row['Taxable Value']:,.2f} is {row['hsn_val_zscore']:.1f} standard deviations above historical cohort norm for HSN {row['Line-Item HSN Code']}."
         )
 
     # 5. Duplicate
@@ -510,7 +518,7 @@ def generate_human_readable_reasons(row: pd.Series) -> list[str]:
 
     # 6. Fallback if ML tree partitioned as outlier
     if not reasons and row.get("is_anomaly", False):
-        reasons.append("Multi-dimensional feature anomaly: Combined feature vectors (amounts, rates, state ratios) isolate into an outlier cluster in Isolation Forest trees.")
+        reasons.append("Multi-dimensional feature anomaly: Combined feature values isolate into an outlier cluster within the Isolation Forest anomaly trees.")
 
     return reasons
 
@@ -518,10 +526,10 @@ def generate_human_readable_reasons(row: pd.Series) -> list[str]:
 # Main Streamlit Application
 # ==============================================================================
 def main():
-    st.title("🛡️ GST Invoice Anomaly Detector & Multimodal OCR")
+    st.title("🛡️ Enterprise GST Invoice Audit & Anomaly Intelligence")
     st.markdown(
-        "Financial compliance audit system leveraging **Google Gemini 1.5 Flash Vision** for automated document OCR "
-        "and **Scikit-Learn Isolation Forest** for unsupervised anomaly detection and statutory tax violation mining."
+        "Financial compliance audit system leveraging an **Enterprise Document Processing Engine** for automated document extraction "
+        "and **Isolation Forest Anomaly Algorithm** for unsupervised risk scoring and statutory tax violation detection."
     )
 
     # Initialize reference dataset in session state
@@ -554,13 +562,13 @@ def main():
         random_seed = st.number_input("Random Seed", value=42, step=1)
 
         st.markdown("---")
-        st.header("🔑 Gemini Vision API")
-        env_gemini_key = os.environ.get("GEMINI_API_KEY", "")
+        st.header("🔑 Document Vision Engine")
+        env_doc_key = os.environ.get("DOCUMENT_AI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
         api_key_input = st.text_input(
-            "Gemini API Key",
-            value=env_gemini_key,
+            "Document Processing API Key",
+            value=env_doc_key,
             type="password",
-            help="Required for extracting invoices from PNG, JPG, JPEG, and PDF documents."
+            help="Required for automated extraction from PNG, JPG, JPEG, and PDF documents."
         )
 
         st.markdown("---")
@@ -571,7 +579,7 @@ def main():
         uploaded_file = st.file_uploader(
             "Upload Invoices (CSV, JSON, PNG, JPG, JPEG, PDF)",
             type=["csv", "json", "png", "jpg", "jpeg", "pdf"],
-            help="Upload batch spreadsheets or single invoice images/PDFs."
+            help="Upload batch spreadsheets or single invoice images/PDFs for automated audit."
         )
 
     # Train baseline Isolation Forest model (guaranteed initialized)
@@ -596,36 +604,32 @@ def main():
         iso_model, iso_scaler, min_s, max_s = None, None, -0.5, 0.5
 
     # --------------------------------------------------------------------------
-    # Case 1: Uploaded File is an Image or PDF (Multimodal OCR Workflow)
+    # Case 1: Uploaded File is an Image or PDF (Scan-to-Inference Pipeline)
     # --------------------------------------------------------------------------
     if uploaded_file is not None and uploaded_file.name.lower().endswith((".png", ".jpg", ".jpeg", ".pdf")):
-        st.markdown("### 🔍 Multimodal Invoice Extraction & Isolation Forest Anomaly Detection")
-        st.info(f"File uploaded: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB). Running Gemini Vision OCR...")
+        st.markdown("### 🔍 Scan-to-Inference Automated Audit Pipeline")
 
-        # Cache extracted dict in session state to avoid re-calling Gemini on page re-renders
+        # Cache extracted dict in session state to avoid re-calling vision engine on re-renders
         file_cache_key = f"extracted_{uploaded_file.name}_{uploaded_file.size}"
         if file_cache_key not in st.session_state:
-            with st.spinner("🤖 Extracting structured invoice entities using Gemini 1.5 Flash..."):
+            with st.spinner("⚡ Extracting structured invoice entities via Document Processing Engine..."):
                 try:
                     raw_extracted = extract_invoice_from_image(uploaded_file, api_key=api_key_input)
                     st.session_state[file_cache_key] = raw_extracted
-                    st.success("✅ Gemini OCR extraction completed successfully!")
                 except Exception as e:
-                    st.error(f"OCR Extraction Failed: {str(e)}")
+                    st.error(f"Document Extraction Failed: {str(e)}")
                     st.stop()
         else:
             raw_extracted = st.session_state[file_cache_key]
 
-        # Working dictionary in session state for human-in-the-loop updates
+        # Working dictionary in session state for editable form
         active_dict_key = f"active_{uploaded_file.name}_{uploaded_file.size}"
         if active_dict_key not in st.session_state:
             st.session_state[active_dict_key] = dict(raw_extracted)
 
         current_invoice_dict = st.session_state[active_dict_key]
 
-        # ----------------------------------------------------------------------
         # Immediate Isolation Forest Evaluation on Extracted Invoice Data
-        # ----------------------------------------------------------------------
         eval_result = evaluate_invoice_anomaly(
             current_invoice_dict,
             model=iso_model,
@@ -641,111 +645,103 @@ def main():
         risk_score = eval_result["risk_score"]
         explanations = eval_result["explanations"]
 
-        # ======================================================================
-        # IMMEDIATE ANOMALY DETECTION RESULTS BANNER & METRICS
-        # ======================================================================
-        st.markdown("#### 🛡️ Anomaly Detection Results")
-        res_col1, res_col2, res_col3, res_col4 = st.columns([2, 1, 1, 1])
-
-        with res_col1:
-            if is_anomaly:
-                st.markdown(
-                    f"""
-                    <div style="background-color: #fee2e2; border: 2px solid #ef4444; border-radius: 8px; padding: 12px 16px; color: #991b1b; font-weight: 700; font-size: 1.1rem; display: flex; align-items: center; gap: 8px;">
-                        <span>🚨</span>
-                        <span>High-risk Alert ({pred_label} / Anomaly) &bull; Risk: {risk_score:.1f}%</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-            else:
-                st.markdown(
-                    f"""
-                    <div style="background-color: #dcfce7; border: 2px solid #22c55e; border-radius: 8px; padding: 12px 16px; color: #166534; font-weight: 700; font-size: 1.1rem; display: flex; align-items: center; gap: 8px;">
-                        <span>✅</span>
-                        <span>Valid Invoice ({pred_label} / Normal) &bull; Risk: {risk_score:.1f}%</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-            st.caption(f"**Isolation Forest Anomaly Score (`score_samples`):** `{raw_score:.4f}` *(Lower/negative scores indicate higher anomaly isolation)*")
-
-        with res_col2:
-            st.metric("Taxable Value", f"₹{clean_numeric_value(current_invoice_dict.get('taxable_value', 0)):,.2f}")
-        with res_col3:
-            st.metric("Total Tax", f"₹{clean_numeric_value(current_invoice_dict.get('total_tax', 0)):,.2f}")
-        with res_col4:
-            st.metric("Total Amount", f"₹{clean_numeric_value(current_invoice_dict.get('total_amount', 0)):,.2f}")
-
-        # Anomaly Explanations & Specific Rule Violations
-        if explanations:
-            st.error("⚠️ **Detected Statutory Rule Violations & Anomaly Explanations:**")
-            for reason in explanations:
-                st.markdown(f"- **{reason}**")
-        else:
-            st.success("🎉 **No Rule Violations Detected**: Invoice tax ratio, arithmetic totals, and interstate/intrastate place of supply fully conform to GST statutory standards.")
-
-        st.markdown("---")
-
-        # Side-by-Side: Document Preview & Extracted/Editable Fields
-        col_preview, col_form = st.columns([1, 1], gap="large")
-
-        # LEFT COLUMN: Document Preview
-        with col_preview:
-            st.markdown("#### 📄 Document Preview")
+        # Document Scan Preview (Collapsible Expander)
+        with st.expander("📄 Document Scan Preview", expanded=False):
             if uploaded_file.name.lower().endswith((".png", ".jpg", ".jpeg")):
                 image = Image.open(uploaded_file)
-                st.image(image, caption=f"Uploaded Invoice: {uploaded_file.name}", use_container_width=True)
+                st.image(image, caption=f"Uploaded Document: {uploaded_file.name}", use_container_width=True)
             else:
-                st.markdown(
-                    f"""
-                    <div style="border: 2px dashed #cbd5e1; border-radius: 12px; padding: 40px; text-align: center; background: white;">
-                        <span style="font-size: 3rem;">📄</span>
-                        <h4 style="margin-top: 10px; color: #1e293b;">{uploaded_file.name}</h4>
-                        <p style="color: #64748b; font-size: 0.85rem;">PDF Invoice Document ({uploaded_file.size / 1024:.1f} KB)</p>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
+                st.info(f"PDF Document: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)")
 
-        # RIGHT COLUMN: Extracted Data Review & Human-in-the-Loop Adjustment
-        with col_form:
-            st.markdown("#### ✏️ Extracted Invoice Details & Auditor Correction")
-            st.caption("Values extracted by OCR. You can modify any fields below to immediately re-evaluate anomaly detection.")
+        # ======================================================================
+        # DEDICATED SIDE-BY-SIDE RESULTS LAYOUT
+        # Left Column: "Invoice Details" | Right Column: "Audit Status"
+        # ======================================================================
+        col_details, col_audit = st.columns([1, 1], gap="large")
+
+        # ----------------------------------------------------------------------
+        # LEFT COLUMN: Invoice Details (Editable Form)
+        # ----------------------------------------------------------------------
+        with col_details:
+            st.markdown("#### 📋 Invoice Details")
+            st.caption("Extracted metadata and tax values. Verify or edit any field to instantly trigger re-evaluation.")
 
             with st.form("invoice_review_form"):
-                f_inv_num = st.text_input("Invoice Number", value=str(current_invoice_dict.get("invoice_number", "")))
+                f_inv_num = st.text_input(
+                    "Invoice Number",
+                    value=str(current_invoice_dict.get("invoice_number", ""))
+                )
+
                 c1, c2 = st.columns(2)
                 with c1:
-                    f_supp_gstin = st.text_input("Supplier GSTIN (15 chars)", value=str(current_invoice_dict.get("supplier_gstin", "")).upper())
+                    f_supp_gstin = st.text_input(
+                        "Supplier GSTIN (15 chars)",
+                        value=str(current_invoice_dict.get("supplier_gstin", "")).upper()
+                    )
                 with c2:
-                    f_recv_gstin = st.text_input("Receiver GSTIN (15 chars)", value=str(current_invoice_dict.get("receiver_gstin", "")).upper())
+                    f_recv_gstin = st.text_input(
+                        "Receiver GSTIN (15 chars)",
+                        value=str(current_invoice_dict.get("receiver_gstin", "")).upper()
+                    )
 
                 c3, c4 = st.columns(2)
                 with c3:
-                    f_date = st.text_input("Invoice Date", value=str(current_invoice_dict.get("invoice_date", "")))
+                    f_date = st.text_input(
+                        "Invoice Date",
+                        value=str(current_invoice_dict.get("invoice_date", ""))
+                    )
                 with c4:
-                    f_hsn = st.text_input("Line-Item HSN Code", value=str(current_invoice_dict.get("hsn_code", "")))
+                    f_hsn = st.text_input(
+                        "Line-Item HSN Code",
+                        value=str(current_invoice_dict.get("hsn_code", ""))
+                    )
 
                 c5, c6 = st.columns(2)
                 with c5:
-                    f_taxable = st.number_input("Taxable Value (₹)", value=clean_numeric_value(current_invoice_dict.get("taxable_value", 0.0)), step=100.0)
+                    f_taxable = st.number_input(
+                        "Taxable Value (₹)",
+                        value=clean_numeric_value(current_invoice_dict.get("taxable_value", 0.0)),
+                        step=100.0
+                    )
                 with c6:
-                    f_cgst = st.number_input("CGST Amount (₹)", value=clean_numeric_value(current_invoice_dict.get("cgst_amount", 0.0)), step=10.0)
+                    f_cgst = st.number_input(
+                        "CGST Amount (₹)",
+                        value=clean_numeric_value(current_invoice_dict.get("cgst_amount", 0.0)),
+                        step=10.0
+                    )
 
                 c7, c8 = st.columns(2)
                 with c7:
-                    f_sgst = st.number_input("SGST Amount (₹)", value=clean_numeric_value(current_invoice_dict.get("sgst_amount", 0.0)), step=10.0)
+                    f_sgst = st.number_input(
+                        "SGST Amount (₹)",
+                        value=clean_numeric_value(current_invoice_dict.get("sgst_amount", 0.0)),
+                        step=10.0
+                    )
                 with c8:
-                    f_igst = st.number_input("IGST Amount (₹)", value=clean_numeric_value(current_invoice_dict.get("igst_amount", 0.0)), step=10.0)
+                    f_igst = st.number_input(
+                        "IGST Amount (₹)",
+                        value=clean_numeric_value(current_invoice_dict.get("igst_amount", 0.0)),
+                        step=10.0
+                    )
 
                 c9, c10 = st.columns(2)
                 with c9:
-                    f_total_tax = st.number_input("Total Tax (₹)", value=clean_numeric_value(current_invoice_dict.get("total_tax", 0.0)), step=10.0)
+                    f_total_tax = st.number_input(
+                        "Total Tax (₹)",
+                        value=clean_numeric_value(current_invoice_dict.get("total_tax", 0.0)),
+                        step=10.0
+                    )
                 with c10:
-                    f_total_amt = st.number_input("Grand Total Amount (₹)", value=clean_numeric_value(current_invoice_dict.get("total_amount", 0.0)), step=100.0)
+                    f_total_amt = st.number_input(
+                        "Grand Total Amount (₹)",
+                        value=clean_numeric_value(current_invoice_dict.get("total_amount", 0.0)),
+                        step=100.0
+                    )
 
-                update_btn = st.form_submit_button("🔄 Update & Re-evaluate Anomaly Score", use_container_width=True)
+                update_btn = st.form_submit_button(
+                    "🔄 Update & Re-evaluate Anomaly Score",
+                    use_container_width=True
+                )
                 if update_btn:
                     st.session_state[active_dict_key] = {
                         "invoice_number": f_inv_num,
@@ -761,6 +757,87 @@ def main():
                         "total_amount": f_total_amt,
                     }
                     st.rerun()
+
+        # ----------------------------------------------------------------------
+        # RIGHT COLUMN: Audit Status (Color-coded Alerts, Scores, Explanations)
+        # ----------------------------------------------------------------------
+        with col_audit:
+            st.markdown("#### 🛡️ Audit Status")
+
+            # Color-Coded Risk Status Banner
+            if is_anomaly:
+                st.markdown(
+                    f"""
+                    <div style="background-color: #fee2e2; border: 2px solid #ef4444; border-radius: 10px; padding: 16px 20px; color: #991b1b; margin-bottom: 16px;">
+                        <div style="font-size: 1.25rem; font-weight: 800; display: flex; align-items: center; gap: 10px;">
+                            <span>🚨</span>
+                            <span>High Risk Anomaly (-1)</span>
+                        </div>
+                        <div style="margin-top: 6px; font-size: 0.95rem; font-weight: 600; color: #b91c1c;">
+                            Calculated Anomaly Risk Score: <strong>{risk_score:.1f}%</strong>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(
+                    f"""
+                    <div style="background-color: #dcfce7; border: 2px solid #22c55e; border-radius: 10px; padding: 16px 20px; color: #166534; margin-bottom: 16px;">
+                        <div style="font-size: 1.25rem; font-weight: 800; display: flex; align-items: center; gap: 10px;">
+                            <span>✅</span>
+                            <span>Valid (1 / Normal)</span>
+                        </div>
+                        <div style="margin-top: 6px; font-size: 0.95rem; font-weight: 600; color: #15803d;">
+                            Calculated Anomaly Risk Score: <strong>{risk_score:.1f}%</strong> (Low Risk)
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+            st.caption(
+                f"**Anomaly Algorithm Decision Score (`score_samples`):** `{raw_score:.4f}` "
+                "*(Lower / negative values indicate higher isolation risk)*"
+            )
+
+            # Financial Metric Cards
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.metric("Taxable Value", f"₹{clean_numeric_value(current_invoice_dict.get('taxable_value', 0)):,.2f}")
+            with m2:
+                st.metric("Total Tax", f"₹{clean_numeric_value(current_invoice_dict.get('total_tax', 0)):,.2f}")
+            with m3:
+                st.metric("Total Amount", f"₹{clean_numeric_value(current_invoice_dict.get('total_amount', 0)):,.2f}")
+
+            st.markdown("---")
+
+            # Anomaly Explanations & Specific Risk Factors
+            st.markdown("##### 🔍 Audit Findings & Risk Explanations")
+            if explanations:
+                for reason in explanations:
+                    st.markdown(
+                        f"""
+                        <div style="background: white; border-left: 4px solid #ef4444; border-radius: 6px; padding: 10px 14px; margin-bottom: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                            <span style="font-size: 0.9rem; color: #334155;">{reason}</span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+            else:
+                st.markdown(
+                    """
+                    <div style="background: white; border-left: 4px solid #22c55e; border-radius: 6px; padding: 10px 14px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                        <span style="font-size: 0.9rem; color: #166534; font-weight: 600;">
+                            ✅ No statutory rule violations or mathematical discrepancies detected.
+                        </span>
+                        <div style="font-size: 0.8rem; color: #64748b; margin-top: 4px;">
+                            Tax calculations, interstate/intrastate rates, and amounts fully conform with standard compliance patterns.
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
 
         return
 

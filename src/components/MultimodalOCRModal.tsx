@@ -293,10 +293,10 @@ export const MultimodalOCRModal: React.FC<Props> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-bold text-white tracking-tight">
-                  Multimodal Invoice OCR & Anomaly Audit
+                  Multimodal Invoice Scan & Anomaly Audit
                 </h2>
                 <span className="text-[10px] font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2 py-0.5 rounded-full">
-                  Google Gemini 1.5 Flash
+                  Document Vision Engine
                 </span>
               </div>
               <p className="text-xs text-slate-400">
@@ -366,7 +366,7 @@ export const MultimodalOCRModal: React.FC<Props> = ({
                   <div className="absolute inset-0 bg-white/80 backdrop-blur-xs flex flex-col items-center justify-center z-20">
                     <RefreshCw className="w-8 h-8 text-blue-600 animate-spin mb-2" />
                     <span className="text-xs font-semibold text-slate-700">
-                      Gemini 1.5 Flash extracting structured JSON...
+                      Document Vision Engine extracting structured JSON...
                     </span>
                   </div>
                 )}
@@ -475,7 +475,7 @@ export const MultimodalOCRModal: React.FC<Props> = ({
                 )}
 
                 <p className="text-[11px] text-slate-400 mt-2 text-center">
-                  Preview mirrors physical or PDF invoice ingested by Gemini 1.5 Flash Vision.
+                  Preview mirrors physical or PDF invoice ingested by Document Vision Engine.
                 </p>
               </div>
             </div>
@@ -485,7 +485,7 @@ export const MultimodalOCRModal: React.FC<Props> = ({
               <div className="flex items-center justify-between mb-2.5">
                 <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
                   <Cpu className="w-4 h-4 text-indigo-600" />
-                  Gemini Structured Extraction (Editable Review Form)
+                  Structured Extraction (Editable Review Form)
                 </span>
                 <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
                   <CheckCircle2 className="w-3.5 h-3.5" /> Auto-Standardized
@@ -718,7 +718,7 @@ export const MultimodalOCRModal: React.FC<Props> = ({
         {/* Modal Footer */}
         <div className="p-4 bg-slate-100 border-t border-slate-200 flex items-center justify-between">
           <span className="text-xs text-slate-500">
-            Powered by <strong>Google Gemini 1.5 Flash Vision</strong> structured mode & Scikit-Learn Isolation Forest.
+            Powered by <strong>Document Processing Vision Engine</strong> & Scikit-Learn Isolation Forest.
           </span>
           <button
             onClick={onClose}

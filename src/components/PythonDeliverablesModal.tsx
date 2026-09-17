@@ -14,7 +14,7 @@ export const PythonDeliverablesModal: React.FC<Props> = ({ isOpen, onClose }) =>
 
   const appPyCode = `"""
 GST Invoice Anomaly Detection Dashboard
-Powered by Scikit-Learn Isolation Forest & Google Gemini 1.5 Flash Multimodal OCR
+Powered by Scikit-Learn Isolation Forest & Enterprise Document Processing Engine
 """
 
 import io
@@ -31,17 +31,17 @@ from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 from pydantic import BaseModel, Field
 
-# Optional Gemini SDK import with graceful fallback
+# Optional Document Processing Engine SDK import with graceful fallback
 try:
     import google.generativeai as genai
-    GEMINI_AVAILABLE = True
+    DOC_ENGINE_AVAILABLE = True
 except ImportError:
     genai = None
-    GEMINI_AVAILABLE = False
+    DOC_ENGINE_AVAILABLE = False
 
 # Page Configuration
 st.set_page_config(
-    page_title="GST Invoice Anomaly Detector | Isolation Forest & Gemini OCR",
+    page_title="GST Invoice Anomaly Detector | Enterprise Audit Pipeline",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -67,7 +67,7 @@ ML_FEATURE_COLS = [
 ]
 
 # ==============================================================================
-# 1. Gemini Multimodal Structured Schema & OCR Helper
+# 1. Document Vision Multimodal Structured Schema & Ingestion Helper
 # ==============================================================================
 class ExtractedInvoiceSchema(BaseModel):
     invoice_number: str = Field(description="Unique Invoice Number or Bill reference")
@@ -83,11 +83,11 @@ class ExtractedInvoiceSchema(BaseModel):
     total_amount: float = Field(default=0.0, description="Grand total invoice payable amount")
 
 def extract_invoice_from_image(uploaded_file, api_key: str = None) -> dict:
-    """Sends an invoice image (PNG/JPG/JPEG) or PDF to Gemini 1.5 Flash in structured output mode."""
-    if not GEMINI_AVAILABLE:
-        raise RuntimeError("The 'google-generativeai' package is required. Run: pip install google-generativeai")
+    """Sends an invoice image (PNG/JPG/JPEG) or PDF to Document Processing Engine in structured output mode."""
+    if not DOC_ENGINE_AVAILABLE:
+        raise RuntimeError("The document processing vision libraries are not installed. Run: pip install google-generativeai")
 
-    active_key = api_key or os.environ.get("GEMINI_API_KEY") or getattr(st, "secrets", {}).get("GEMINI_API_KEY", "")
+    active_key = api_key or os.environ.get("DOCUMENT_AI_API_KEY") or os.environ.get("GEMINI_API_KEY") or getattr(st, "secrets", {}).get("GEMINI_API_KEY", "")
     if not active_key:
         raise ValueError("GEMINI_API_KEY not configured. Set environment variable or supply in sidebar.")
 
@@ -258,7 +258,7 @@ def evaluate_invoice_anomaly(
 
   const ocrModuleCode = `"""
 standalone_ocr_extractor.py
-Modular Extraction Helper using Gemini 1.5 Flash Vision & Pydantic
+Modular Extraction Helper using Enterprise Document Vision Engine & Pydantic
 """
 import os
 import json
@@ -424,11 +424,11 @@ Upload invoice images (PNG, JPG), PDF documents, or CSV/JSON batches to begin au
               <h2 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
                 Python Source Code & Deliverables
                 <span className="text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full">
-                  Gemini Vision OCR Updated
+                  Document Vision Engine Updated
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
-                Executable Streamlit application, Gemini 1.5 Flash structured OCR, and Scikit-Learn Isolation Forest
+                Executable Streamlit application, Document Processing Engine structured extraction, and Scikit-Learn Isolation Forest
               </p>
             </div>
           </div>
@@ -462,7 +462,7 @@ Upload invoice images (PNG, JPG), PDF documents, or CSV/JSON batches to begin au
             }`}
           >
             <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-            Gemini OCR Helper
+            Document AI OCR Helper
           </button>
           <button
             onClick={() => setActiveTab("requirements")}
