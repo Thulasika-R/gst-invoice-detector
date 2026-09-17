@@ -223,7 +223,37 @@ def run_gst_feature_engineering(df: pd.DataFrame, baseline_df: pd.DataFrame = No
 
     return data
 
-# See app.py for complete Streamlit UI rendering logic
+def engineer_features_for_inference(single_df: pd.DataFrame, baseline_df: pd.DataFrame = None) -> pd.DataFrame:
+    """Computes tax_ratio, tax_math_error, and interstate_check on extracted invoice row."""
+    return run_gst_feature_engineering(single_df, baseline_df=baseline_df)
+
+def evaluate_invoice_anomaly(
+    extracted_data: dict,
+    model: IsolationForest,
+    scaler: StandardScaler,
+    baseline_df: pd.DataFrame = None,
+    min_score: float = -0.6,
+    max_score: float = 0.2
+) -> dict:
+    """Evaluates extracted invoice dictionary with Isolation Forest inference."""
+    df = convert_extracted_json_to_df(extracted_data)
+    fe_df = engineer_features_for_inference(df, baseline_df=baseline_df)
+    X = fe_df[ML_FEATURE_COLS].copy().fillna(0.0)
+    X_scaled = scaler.transform(X)
+    pred = int(model.predict(X_scaled)[0])  # -1 = Anomaly, 1 = Normal
+    raw_anomaly_score = float(model.score_samples(X_scaled)[0])
+    denom = (max_score - min_score) if (max_score - min_score) > 1e-5 else 1.0
+    risk_score = float(np.clip(100.0 * (1.0 - (raw_anomaly_score - min_score) / denom), 0.0, 100.0))
+    fe_df["is_anomaly"] = pred == -1
+    return {
+        "is_anomaly": pred == -1,
+        "prediction": pred,
+        "status_badge": "High-risk Alert (-1 / Anomaly)" if pred == -1 else "Valid Invoice (1 / Normal)",
+        "raw_anomaly_score": raw_anomaly_score,
+        "risk_score": risk_score,
+        "explanations": generate_human_readable_reasons(fe_df.iloc[0]),
+        "features": fe_df.iloc[0].to_dict()
+    }
 `;
 
   const ocrModuleCode = `"""
