@@ -11,6 +11,7 @@ import { InvoiceTable } from "./components/InvoiceTable";
 import { InvoiceDetailModal } from "./components/InvoiceDetailModal";
 import { PythonDeliverablesModal } from "./components/PythonDeliverablesModal";
 import { FileUploadModal } from "./components/FileUploadModal";
+import { MultimodalOCRModal } from "./components/MultimodalOCRModal";
 import {
   ShieldCheck,
   FileCode2,
@@ -33,6 +34,7 @@ export default function App() {
   const [selectedInvoice, setSelectedInvoice] = useState<ProcessedInvoice | null>(null);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isPythonModalOpen, setIsPythonModalOpen] = useState(false);
+  const [isOCROpen, setIsOCROpen] = useState(false);
 
   // Execute Isolation Forest pipeline on invoices with active model config
   const { processed, stats } = useMemo(() => {
@@ -47,6 +49,11 @@ export default function App() {
   const handleUploadSuccess = (uploadedInvoices: GSTInvoice[], filename: string) => {
     setInvoices(uploadedInvoices);
     setDatasetName(`${filename} (${uploadedInvoices.length} invoices)`);
+  };
+
+  const handleAddSingleInvoice = (newInvoice: GSTInvoice) => {
+    setInvoices((prev) => [newInvoice, ...prev]);
+    setDatasetName(`Batch with OCR Invoice #${newInvoice["Invoice Number"]}`);
   };
 
   return (
@@ -75,6 +82,13 @@ export default function App() {
 
           <div className="flex items-center gap-2.5">
             <button
+              onClick={() => setIsOCROpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600/90 hover:bg-indigo-600 text-white rounded-lg text-xs font-semibold border border-indigo-500/50 transition shadow-xs"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+              <span>Gemini OCR (Image/PDF)</span>
+            </button>
+            <button
               onClick={() => setIsUploadOpen(true)}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition shadow-xs"
             >
@@ -100,6 +114,7 @@ export default function App() {
           onChangeConfig={setModelConfig}
           onResetSampleData={handleResetSampleData}
           onOpenUpload={() => setIsUploadOpen(true)}
+          onOpenMultimodalOCR={() => setIsOCROpen(true)}
           onOpenPythonModal={() => setIsPythonModalOpen(true)}
           currentDatasetName={datasetName}
         />
@@ -198,6 +213,13 @@ export default function App() {
       <PythonDeliverablesModal
         isOpen={isPythonModalOpen}
         onClose={() => setIsPythonModalOpen(false)}
+      />
+
+      {/* Multimodal Gemini Vision OCR Ingestion Modal */}
+      <MultimodalOCRModal
+        isOpen={isOCROpen}
+        onClose={() => setIsOCROpen(false)}
+        onAddInvoiceToBatch={handleAddSingleInvoice}
       />
     </div>
   );

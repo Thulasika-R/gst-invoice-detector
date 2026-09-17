@@ -1,6 +1,6 @@
 {
   "name": "GST Invoice Anomaly Detector",
-  "description": "End-to-end GST invoice anomaly detection system powered by Isolation Forest machine learning, domain tax heuristics, and interactive analytics.",
+  "description": "End-to-end GST invoice anomaly detection system powered by Isolation Forest ML, Google Gemini 1.5 Flash Multimodal OCR extraction, and statutory tax validation rules.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

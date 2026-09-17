@@ -7,6 +7,7 @@ interface Props {
   onChangeConfig: (newConfig: ModelConfig) => void;
   onResetSampleData: () => void;
   onOpenUpload: () => void;
+  onOpenMultimodalOCR: () => void;
   onOpenPythonModal: () => void;
   currentDatasetName: string;
 }
@@ -16,6 +17,7 @@ export const ModelControls: React.FC<Props> = ({
   onChangeConfig,
   onResetSampleData,
   onOpenUpload,
+  onOpenMultimodalOCR,
   onOpenPythonModal,
   currentDatasetName,
 }) => {
@@ -107,6 +109,14 @@ export const ModelControls: React.FC<Props> = ({
           >
             <UploadCloud className="w-3.5 h-3.5 text-blue-600" />
             Upload CSV/JSON
+          </button>
+
+          <button
+            onClick={onOpenMultimodalOCR}
+            className="inline-flex items-center gap-1.5 px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-semibold transition shadow-2xs"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+            Multimodal OCR (Image/PDF)
           </button>
 
           <button
