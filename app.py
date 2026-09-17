@@ -19,12 +19,25 @@ from pydantic import BaseModel, Field
 import typing
 
 # Optional Document Processing Vision Engine import with graceful fallback
+# Modern Google GenAI SDK (google-genai)
 try:
-    import google.generativeai as genai
-    DOC_SCANNER_AVAILABLE = True
+    from google import genai
+    from google.genai import types
+    GOOGLE_GENAI_NEW_AVAILABLE = True
 except ImportError:
     genai = None
-    DOC_SCANNER_AVAILABLE = False
+    types = None
+    GOOGLE_GENAI_NEW_AVAILABLE = False
+
+# Legacy Google GenerativeAI SDK (fallback)
+try:
+    import google.generativeai as genai_legacy
+    GENAI_LEGACY_AVAILABLE = True
+except ImportError:
+    genai_legacy = None
+    GENAI_LEGACY_AVAILABLE = False
+
+DOC_SCANNER_AVAILABLE = GOOGLE_GENAI_NEW_AVAILABLE or GENAI_LEGACY_AVAILABLE
 
 # ==============================================================================
 # Page Configuration & Styling
@@ -107,145 +120,359 @@ ML_FEATURE_COLS = [
 # Pydantic Schema for Structured Document Processing Engine
 # ==============================================================================
 class ExtractedInvoiceSchema(BaseModel):
-    invoice_number: str = Field(description="Unique Invoice Number or Bill reference")
-    supplier_gstin: str = Field(description="15-character Indian GSTIN of the supplier / vendor")
-    receiver_gstin: str = Field(description="15-character Indian GSTIN of the buyer / recipient")
-    invoice_date: str = Field(description="Date of invoice issuance in YYYY-MM-DD or DD/MM/YYYY")
-    hsn_code: str = Field(description="Primary 4 to 8 digit HSN/SAC code of the invoiced item")
-    taxable_value: float = Field(default=0.0, description="Total taxable value/subtotal before GST")
-    cgst_amount: float = Field(default=0.0, description="Central GST (CGST) tax amount")
-    sgst_amount: float = Field(default=0.0, description="State GST (SGST) tax amount")
-    igst_amount: float = Field(default=0.0, description="Integrated GST (IGST) tax amount")
-    total_tax: float = Field(default=0.0, description="Total GST amount (CGST + SGST + IGST)")
-    total_amount: float = Field(default=0.0, description="Grand total invoice payable amount")
+    invoice_number: str = Field(default="", description="Unique Invoice Number or Bill reference string")
+    supplier_gstin: str = Field(default="", description="15-character Indian GSTIN of the supplier / vendor")
+    receiver_gstin: str = Field(default="", description="15-character Indian GSTIN of the buyer / recipient")
+    invoice_date: str = Field(default="", description="Date of invoice issuance in YYYY-MM-DD format")
+    hsn_code: str = Field(default="", description="Primary 4 to 8 digit HSN/SAC code of the invoiced item")
+    taxable_value: float = Field(default=0.0, description="Total taxable subtotal before GST (raw float number only)")
+    cgst_amount: float = Field(default=0.0, description="Central GST (CGST) tax amount (raw float number only)")
+    sgst_amount: float = Field(default=0.0, description="State GST (SGST) tax amount (raw float number only)")
+    igst_amount: float = Field(default=0.0, description="Integrated GST (IGST) tax amount (raw float number only)")
+    total_tax: float = Field(default=0.0, description="Total GST amount (CGST + SGST + IGST) (raw float number only)")
+    total_amount: float = Field(default=0.0, description="Grand total invoice payable amount (raw float number only)")
 
 # ==============================================================================
-# Enterprise Document Processing Engine Multimodal Extraction
+# Sanitization & Cleaning Utilities
 # ==============================================================================
-def extract_invoice_from_image(uploaded_file, api_key: str = None) -> dict:
+def clean_numeric_value(val) -> float:
     """
-    Sends an invoice image (PNG/JPG/JPEG) or PDF to the Document Processing Engine
-    using structured JSON output mode to extract invoice fields.
+    Standardizes and sanitizes numeric invoice fields:
+    - Strips currency symbols (₹, $, €, £, INR, Rs), commas, and spaces using regex.
+    - Accurately parses float values.
+    - Safely replaces None, NaN, empty strings, or unparseable text with 0.0.
     """
-    if not DOC_SCANNER_AVAILABLE:
-        raise RuntimeError("Document processing vision libraries are not installed in the environment.")
+    if val is None or pd.isna(val):
+        return 0.0
+    if isinstance(val, (int, float)):
+        return 0.0 if np.isnan(val) else float(val)
+    
+    val_str = str(val).strip()
+    if not val_str or val_str.lower() in ("none", "nan", "null", "n/a", "-", "--"):
+        return 0.0
+    
+    # Strip currency symbols, commas, spaces, currency symbols/codes
+    cleaned_str = re.sub(r"(?i)[₹\$,€£\s]|inr|rs\.?", "", val_str).strip()
+    match = re.search(r"[-+]?\d*\.?\d+", cleaned_str)
+    if match:
+        try:
+            return float(match.group())
+        except (ValueError, TypeError):
+            return 0.0
+    return 0.0
 
+def clean_text_value(val, default: str = "") -> str:
+    """Sanitizes text fields: strips whitespace, removes None-like placeholders, returns clean string."""
+    if val is None or pd.isna(val):
+        return default
+    s = str(val).strip()
+    return default if (not s or s.lower() in ("none", "nan", "null", "n/a", "-")) else s
+
+# ==============================================================================
+# Modern Document Processing Engine Multimodal Extraction (google-genai)
+# ==============================================================================
+def extract_invoice_details(uploaded_file, api_key: str = None) -> pd.DataFrame:
+    """
+    Robust OCR extraction pipeline using the latest google-genai SDK standards.
+    Accepts a Streamlit UploadedFile buffer (PNG, JPG, JPEG, PDF) and safely returns
+    a standardized 1-row Pandas DataFrame ready for ML feature engineering and inference.
+    """
+    # 1. Error Diagnostics: File Validation & Readability
+    if uploaded_file is None:
+        err_msg = "No document file was provided. Please upload an invoice image (PNG, JPG, JPEG) or PDF."
+        if "st" in globals() and hasattr(st, "error"):
+            st.error(f"📁 **File Upload Error:** {err_msg}")
+        raise ValueError(err_msg)
+
+    try:
+        if hasattr(uploaded_file, "seek"):
+            uploaded_file.seek(0)
+        file_bytes = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
+        if hasattr(uploaded_file, "seek"):
+            uploaded_file.seek(0)
+
+        if not file_bytes or len(file_bytes) == 0:
+            err_msg = f"The uploaded file '{getattr(uploaded_file, 'name', 'document')}' is empty (0 bytes)."
+            if "st" in globals() and hasattr(st, "error"):
+                st.error(f"⚠️ **File Error:** {err_msg}")
+            raise ValueError(err_msg)
+    except Exception as read_err:
+        err_msg = f"Failed to read file buffer from upload: {str(read_err)}"
+        if "st" in globals() and hasattr(st, "error"):
+            st.error(f"⚠️ **File Buffer Error:** {err_msg}")
+        raise RuntimeError(err_msg) from read_err
+
+    # 2. Error Diagnostics: API Key Resolution
     active_key = (
         api_key
         or os.environ.get("DOCUMENT_AI_API_KEY")
         or os.environ.get("GEMINI_API_KEY")
         or getattr(st, "secrets", {}).get("DOCUMENT_AI_API_KEY", "")
         or getattr(st, "secrets", {}).get("GEMINI_API_KEY", "")
+        or getattr(st, "session_state", {}).get("gemini_api_key", "")
+        or getattr(st, "session_state", {}).get("document_ai_api_key", "")
     )
     if not active_key:
-        raise ValueError("Document Processing Engine API Key is not configured. Please supply an API key in the sidebar.")
+        err_msg = "Document Vision Engine API Key is not configured. Please supply an API key in the sidebar or set GEMINI_API_KEY in your environment."
+        if "st" in globals() and hasattr(st, "error"):
+            st.error(f"🔑 **Authentication Error:** {err_msg}")
+        raise ValueError(err_msg)
 
-    genai.configure(api_key=active_key)
+    if not DOC_SCANNER_AVAILABLE:
+        err_msg = "Document vision processing libraries are not installed. Run: pip install google-genai pydantic pillow"
+        if "st" in globals() and hasattr(st, "error"):
+            st.error(f"📦 **Dependency Error:** {err_msg}")
+        raise RuntimeError(err_msg)
 
-    # Determine file mime-type and data
-    file_bytes = uploaded_file.getvalue()
-    filename_lower = uploaded_file.name.lower()
+    # 3. Robust Image/PDF Handling
+    filename = getattr(uploaded_file, "name", "invoice.jpg").lower()
+    is_pdf = filename.endswith(".pdf")
 
-    if filename_lower.endswith(".pdf"):
+    if is_pdf:
         mime_type = "application/pdf"
-        file_part = {"mime_type": mime_type, "data": file_bytes}
-    elif filename_lower.endswith(".png"):
+    elif filename.endswith(".png"):
         mime_type = "image/png"
-        file_part = {"mime_type": mime_type, "data": file_bytes}
+    elif filename.endswith(".webp"):
+        mime_type = "image/webp"
     else:
         mime_type = "image/jpeg"
-        file_part = {"mime_type": mime_type, "data": file_bytes}
+
+    # Attempt PIL.Image conversion for images
+    pil_image = None
+    if not is_pdf:
+        try:
+            pil_image = Image.open(io.BytesIO(file_bytes))
+            if pil_image.mode not in ("RGB", "L"):
+                pil_image = pil_image.convert("RGB")
+        except Exception:
+            pil_image = None
 
     prompt = (
         "You are an expert Indian GST Tax Auditor and Document OCR Specialist. "
-        "Examine the attached invoice document carefully. Extract the specified metadata "
+        "Examine the attached invoice document carefully. Extract all specified metadata "
         "and financial totals into the structured JSON schema. "
-        "Standardize numeric values as raw numbers without currency symbols (₹, $) or commas. "
-        "If a specific field cannot be found, populate it with an empty string or 0.00."
+        "Strict rules:\n"
+        "1. All numeric fields (taxable_value, cgst_amount, sgst_amount, igst_amount, total_tax, total_amount) "
+        "MUST be returned as raw numeric floats without currency symbols (₹, $), commas, or spaces.\n"
+        "2. If a numeric value cannot be located, default it to 0.0.\n"
+        "3. Supplier and receiver GSTINs must be 15-character uppercase alphanumeric strings.\n"
+        "4. Standardize invoice_date to YYYY-MM-DD or standard format."
     )
 
+    extracted_dict = {}
+
+    # 4. Schema-Enforced Structured Extraction Call
     try:
-        model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            generation_config=genai.GenerationConfig(
+        # Preferred Modern SDK: google-genai
+        if GOOGLE_GENAI_NEW_AVAILABLE and genai is not None:
+            client = genai.Client(api_key=active_key)
+
+            if is_pdf:
+                doc_part = types.Part.from_bytes(data=file_bytes, mime_type="application/pdf")
+                contents = [prompt, doc_part]
+            elif pil_image is not None:
+                contents = [prompt, pil_image]
+            else:
+                doc_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
+                contents = [prompt, doc_part]
+
+            config = types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=ExtractedInvoiceSchema,
                 temperature=0.0,
-            ),
-        )
-        response = model.generate_content([prompt, file_part])
-        parsed_data = json.loads(response.text)
-        return parsed_data
-    except Exception as e:
-        # Fallback to general JSON extraction prompt if response_schema is not supported by client version
-        try:
-            fallback_model = genai.GenerativeModel(
-                model_name="gemini-1.5-flash",
-                generation_config=genai.GenerationConfig(
-                    response_mime_type="application/json",
-                    temperature=0.0,
-                )
             )
-            fallback_prompt = (
-                f"{prompt}\nReturn a valid JSON object matching these exact keys: "
-                "invoice_number, supplier_gstin, receiver_gstin, invoice_date, hsn_code, "
-                "taxable_value, cgst_amount, sgst_amount, igst_amount, total_tax, total_amount."
-            )
-            response = fallback_model.generate_content([fallback_prompt, file_part])
-            raw_text = response.text.strip()
-            # Find json block if wrapped in markdown
-            json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
-            return json.loads(raw_text)
-        except Exception as fallback_err:
-            raise RuntimeError(f"Document extraction failed: {str(e)} | Fallback: {str(fallback_err)}")
 
-# ==============================================================================
-# Numeric Standardization & Data Pipeline Integration
-# ==============================================================================
-def clean_numeric_value(val) -> float:
-    """Standardizes numeric fields: strips currency symbols (₹, $, commas) and handles None/NaN -> 0.00"""
-    if val is None or pd.isna(val):
-        return 0.0
-    if isinstance(val, (int, float)):
-        return float(val)
-    
-    cleaned_str = str(val).replace("₹", "").replace("$", "").replace(",", "").strip()
-    match = re.search(r"[-+]?\d*\.?\d+", cleaned_str)
-    if match:
-        try:
-            return float(match.group())
-        except ValueError:
-            return 0.0
-    return 0.0
+            # Try modern models with fallback
+            response = None
+            last_err = None
+            for model_candidate in ["gemini-2.5-flash", "gemini-1.5-flash"]:
+                try:
+                    response = client.models.generate_content(
+                        model=model_candidate,
+                        contents=contents,
+                        config=config,
+                    )
+                    if response and response.text:
+                        break
+                except Exception as cand_err:
+                    last_err = cand_err
+                    continue
+
+            if response is None or not response.text:
+                raise last_err or RuntimeError("No response returned from Document Processing Vision Engine.")
+
+            raw_text = response.text.strip()
+            # Clean markdown codeblocks if present
+            if raw_text.startswith("```"):
+                raw_text = re.sub(r"^```(?:json)?\n|\n```$", "", raw_text).strip()
+            extracted_dict = json.loads(raw_text)
+
+        # Graceful Legacy SDK Fallback: google.generativeai
+        elif GENAI_LEGACY_AVAILABLE and genai_legacy is not None:
+            genai_legacy.configure(api_key=active_key)
+            file_part = {"mime_type": mime_type, "data": file_bytes}
+
+            try:
+                model = genai_legacy.GenerativeModel(
+                    model_name="gemini-1.5-flash",
+                    generation_config=genai_legacy.GenerationConfig(
+                        response_mime_type="application/json",
+                        response_schema=ExtractedInvoiceSchema,
+                        temperature=0.0,
+                    ),
+                )
+                response = model.generate_content([prompt, file_part])
+                raw_text = response.text.strip()
+                if raw_text.startswith("```"):
+                    raw_text = re.sub(r"^```(?:json)?\n|\n```$", "", raw_text).strip()
+                extracted_dict = json.loads(raw_text)
+            except Exception:
+                fallback_model = genai_legacy.GenerativeModel(
+                    model_name="gemini-1.5-flash",
+                    generation_config=genai_legacy.GenerationConfig(
+                        response_mime_type="application/json",
+                        temperature=0.0,
+                    ),
+                )
+                fallback_prompt = (
+                    f"{prompt}\nReturn a valid JSON object matching these exact keys: "
+                    "invoice_number, supplier_gstin, receiver_gstin, invoice_date, hsn_code, "
+                    "taxable_value, cgst_amount, sgst_amount, igst_amount, total_tax, total_amount."
+                )
+                response = fallback_model.generate_content([fallback_prompt, file_part])
+                raw_text = response.text.strip()
+                json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+                if json_match:
+                    extracted_dict = json.loads(json_match.group())
+                else:
+                    extracted_dict = json.loads(raw_text)
+
+    except json.JSONDecodeError as json_err:
+        err_msg = f"Failed to parse structured JSON from Document Processing Engine: {str(json_err)}"
+        if "st" in globals() and hasattr(st, "error"):
+            st.error(f"❌ **JSON Parsing Error:** {err_msg}")
+        raise RuntimeError(err_msg) from json_err
+    except Exception as api_err:
+        err_msg = f"Document Vision Extraction Failed: {str(api_err)}"
+        if "st" in globals() and hasattr(st, "error"):
+            st.error(f"🚨 **Vision Pipeline Error:** {err_msg}")
+        raise RuntimeError(err_msg) from api_err
+
+    # 5. Fallback & Cleaning Layer: Sanitize numeric and text fields
+    taxable_val = clean_numeric_value(extracted_dict.get("taxable_value", 0.0))
+    cgst_amt = clean_numeric_value(extracted_dict.get("cgst_amount", 0.0))
+    sgst_amt = clean_numeric_value(extracted_dict.get("sgst_amount", 0.0))
+    igst_amt = clean_numeric_value(extracted_dict.get("igst_amount", 0.0))
+    total_tax = clean_numeric_value(extracted_dict.get("total_tax", 0.0))
+    total_amt = clean_numeric_value(extracted_dict.get("total_amount", 0.0))
+
+    # Reconcile tax sum if total_tax is missing or 0
+    if total_tax == 0.0 and (cgst_amt + sgst_amt + igst_amt) > 0.0:
+        total_tax = round(cgst_amt + sgst_amt + igst_amt, 2)
+
+    # Reconcile grand total if missing
+    if total_amt == 0.0 and taxable_val > 0.0:
+        total_amt = round(taxable_val + total_tax, 2)
+
+    # Derive tax percentages
+    cgst_rate = round((cgst_amt / taxable_val * 100.0), 2) if taxable_val > 0 else 0.0
+    sgst_rate = round((sgst_amt / taxable_val * 100.0), 2) if taxable_val > 0 else 0.0
+    igst_rate = round((igst_amt / taxable_val * 100.0), 2) if taxable_val > 0 else 0.0
+
+    inv_num = clean_text_value(extracted_dict.get("invoice_number"), "INV-OCR-001")
+    sup_gstin = clean_text_value(extracted_dict.get("supplier_gstin"), "07AAAAA0000A1Z5").upper()
+    rec_gstin = clean_text_value(extracted_dict.get("receiver_gstin"), "07BBBBB0000B1Z6").upper()
+    inv_date = clean_text_value(extracted_dict.get("invoice_date"), "2026-03-15")
+    hsn_code = clean_text_value(extracted_dict.get("hsn_code"), "8471")
+
+    # Clean standardized dictionary representation
+    cleaned_dict = {
+        "invoice_number": inv_num,
+        "supplier_gstin": sup_gstin,
+        "receiver_gstin": rec_gstin,
+        "invoice_date": inv_date,
+        "hsn_code": hsn_code,
+        "taxable_value": taxable_val,
+        "cgst_amount": cgst_amt,
+        "sgst_amount": sgst_amt,
+        "igst_amount": igst_amt,
+        "total_tax": total_tax,
+        "total_amount": total_amt,
+    }
+
+    # Standardized 1-row DataFrame matching the exact schema expected by Isolation Forest
+    row_data = {
+        "Invoice Number": inv_num,
+        "Supplier GSTIN": sup_gstin,
+        "Receiver GSTIN": rec_gstin,
+        "Invoice Date": inv_date,
+        "Line-Item HSN Code": hsn_code,
+        "Taxable Value": taxable_val,
+        "CGST Rate": cgst_rate,
+        "SGST Rate": sgst_rate,
+        "IGST Rate": igst_rate,
+        "Total Tax": total_tax,
+        "Total Amount": total_amt,
+        "Payment Status": "Pending Verification",
+        "cgst_amount": cgst_amt,
+        "sgst_amount": sgst_amt,
+        "igst_amount": igst_amt,
+    }
+
+    df_result = pd.DataFrame([row_data])
+    df_result.attrs["extracted_dict"] = cleaned_dict
+    df_result.attrs["raw_extracted"] = extracted_dict
+
+    return df_result
+
+def extract_invoice_from_image(uploaded_file, api_key: str = None) -> dict:
+    """
+    Backward-compatible wrapper around extract_invoice_details.
+    Returns the cleaned dictionary of extracted invoice metadata and financials.
+    """
+    df_invoice = extract_invoice_details(uploaded_file, api_key=api_key)
+    return df_invoice.attrs.get("extracted_dict", {
+        "invoice_number": df_invoice.iloc[0]["Invoice Number"],
+        "supplier_gstin": df_invoice.iloc[0]["Supplier GSTIN"],
+        "receiver_gstin": df_invoice.iloc[0]["Receiver GSTIN"],
+        "invoice_date": df_invoice.iloc[0]["Invoice Date"],
+        "hsn_code": df_invoice.iloc[0]["Line-Item HSN Code"],
+        "taxable_value": df_invoice.iloc[0]["Taxable Value"],
+        "cgst_amount": df_invoice.iloc[0].get("cgst_amount", 0.0),
+        "sgst_amount": df_invoice.iloc[0].get("sgst_amount", 0.0),
+        "igst_amount": df_invoice.iloc[0].get("igst_amount", 0.0),
+        "total_tax": df_invoice.iloc[0]["Total Tax"],
+        "total_amount": df_invoice.iloc[0]["Total Amount"],
+    })
 
 def convert_extracted_json_to_df(extracted_dict: dict) -> pd.DataFrame:
-    """Converts extracted JSON to a single-row standardized DataFrame ready for ML pipeline."""
+    """
+    Converts an extracted or user-edited JSON/dictionary to a single-row standardized
+    DataFrame ready for ML pipeline and feature engineering.
+    """
     taxable_val = clean_numeric_value(extracted_dict.get("taxable_value", 0.0))
     cgst_amt = clean_numeric_value(extracted_dict.get("cgst_amount", 0.0))
     sgst_amt = clean_numeric_value(extracted_dict.get("sgst_amount", 0.0))
     igst_amt = clean_numeric_value(extracted_dict.get("igst_amount", 0.0))
 
-    # Derive tax percentages from amounts
     cgst_rate = round((cgst_amt / taxable_val * 100.0), 2) if taxable_val > 0 else 0.0
     sgst_rate = round((sgst_amt / taxable_val * 100.0), 2) if taxable_val > 0 else 0.0
     igst_rate = round((igst_amt / taxable_val * 100.0), 2) if taxable_val > 0 else 0.0
 
     total_tax = clean_numeric_value(extracted_dict.get("total_tax", 0.0))
     if total_tax == 0.0 and (cgst_amt + sgst_amt + igst_amt) > 0.0:
-        total_tax = cgst_amt + sgst_amt + igst_amt
+        total_tax = round(cgst_amt + sgst_amt + igst_amt, 2)
 
     total_amt = clean_numeric_value(extracted_dict.get("total_amount", 0.0))
     if total_amt == 0.0 and taxable_val > 0.0:
-        total_amt = taxable_val + total_tax
+        total_amt = round(taxable_val + total_tax, 2)
 
     row_data = {
-        "Invoice Number": str(extracted_dict.get("invoice_number", "INV-OCR-001")).strip(),
-        "Supplier GSTIN": str(extracted_dict.get("supplier_gstin", "07AAAAA0000A1Z5")).strip().upper(),
-        "Receiver GSTIN": str(extracted_dict.get("receiver_gstin", "07BBBBB0000B1Z6")).strip().upper(),
-        "Invoice Date": str(extracted_dict.get("invoice_date", "2026-03-15")).strip(),
-        "Line-Item HSN Code": str(extracted_dict.get("hsn_code", "8471")).strip(),
+        "Invoice Number": clean_text_value(extracted_dict.get("invoice_number"), "INV-OCR-001"),
+        "Supplier GSTIN": clean_text_value(extracted_dict.get("supplier_gstin"), "07AAAAA0000A1Z5").upper(),
+        "Receiver GSTIN": clean_text_value(extracted_dict.get("receiver_gstin"), "07BBBBB0000B1Z6").upper(),
+        "Invoice Date": clean_text_value(extracted_dict.get("invoice_date"), "2026-03-15"),
+        "Line-Item HSN Code": clean_text_value(extracted_dict.get("hsn_code"), "8471"),
         "Taxable Value": taxable_val,
         "CGST Rate": cgst_rate,
         "SGST Rate": sgst_rate,
@@ -614,10 +841,24 @@ def main():
         if file_cache_key not in st.session_state:
             with st.spinner("⚡ Extracting structured invoice entities via Document Processing Engine..."):
                 try:
-                    raw_extracted = extract_invoice_from_image(uploaded_file, api_key=api_key_input)
+                    df_invoice = extract_invoice_details(uploaded_file, api_key=api_key_input)
+                    raw_extracted = df_invoice.attrs.get("extracted_dict", {
+                        "invoice_number": df_invoice.iloc[0]["Invoice Number"],
+                        "supplier_gstin": df_invoice.iloc[0]["Supplier GSTIN"],
+                        "receiver_gstin": df_invoice.iloc[0]["Receiver GSTIN"],
+                        "invoice_date": df_invoice.iloc[0]["Invoice Date"],
+                        "hsn_code": df_invoice.iloc[0]["Line-Item HSN Code"],
+                        "taxable_value": df_invoice.iloc[0]["Taxable Value"],
+                        "cgst_amount": df_invoice.iloc[0].get("cgst_amount", 0.0),
+                        "sgst_amount": df_invoice.iloc[0].get("sgst_amount", 0.0),
+                        "igst_amount": df_invoice.iloc[0].get("igst_amount", 0.0),
+                        "total_tax": df_invoice.iloc[0]["Total Tax"],
+                        "total_amount": df_invoice.iloc[0]["Total Amount"],
+                    })
                     st.session_state[file_cache_key] = raw_extracted
-                except Exception as e:
-                    st.error(f"Document Extraction Failed: {str(e)}")
+                    st.session_state[f"df_{file_cache_key}"] = df_invoice
+                except Exception:
+                    # Specific error diagnostics have already been printed via st.error() inside extract_invoice_details
                     st.stop()
         else:
             raw_extracted = st.session_state[file_cache_key]

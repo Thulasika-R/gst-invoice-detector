@@ -258,55 +258,186 @@ def evaluate_invoice_anomaly(
 
   const ocrModuleCode = `"""
 standalone_ocr_extractor.py
-Modular Extraction Helper using Enterprise Document Vision Engine & Pydantic
+Robust OCR Extraction Pipeline using modern google-genai SDK standards & Pydantic.
+Safely extracts structured invoice data from PNG, JPG, JPEG, and PDF files.
 """
+import io
 import os
-import json
 import re
+import json
 import pandas as pd
+import numpy as np
+from PIL import Image
 from pydantic import BaseModel, Field
-import google.generativeai as genai
+
+# Modern Google GenAI SDK
+try:
+    from google import genai
+    from google.genai import types
+    NEW_GENAI_AVAILABLE = True
+except ImportError:
+    genai = None
+    types = None
+    NEW_GENAI_AVAILABLE = False
+
+try:
+    import google.generativeai as genai_legacy
+    LEGACY_GENAI_AVAILABLE = True
+except ImportError:
+    genai_legacy = None
+    LEGACY_GENAI_AVAILABLE = False
 
 class ExtractedInvoiceSchema(BaseModel):
-    invoice_number: str = Field(description="Unique Invoice Number or Bill reference")
-    supplier_gstin: str = Field(description="15-character Indian GSTIN of the supplier / vendor")
-    receiver_gstin: str = Field(description="15-character Indian GSTIN of the buyer / recipient")
-    invoice_date: str = Field(description="Date of invoice issuance in YYYY-MM-DD or DD/MM/YYYY")
-    hsn_code: str = Field(description="Primary 4 to 8 digit HSN/SAC code of the invoiced item")
-    taxable_value: float = Field(default=0.0, description="Total taxable value/subtotal before GST")
-    cgst_amount: float = Field(default=0.0, description="Central GST (CGST) tax amount")
-    sgst_amount: float = Field(default=0.0, description="State GST (SGST) tax amount")
-    igst_amount: float = Field(default=0.0, description="Integrated GST (IGST) tax amount")
-    total_tax: float = Field(default=0.0, description="Total GST amount (CGST + SGST + IGST)")
-    total_amount: float = Field(default=0.0, description="Grand total invoice payable amount")
+    invoice_number: str = Field(default="", description="Unique Invoice Number or Bill reference string")
+    supplier_gstin: str = Field(default="", description="15-character Indian GSTIN of the supplier / vendor")
+    receiver_gstin: str = Field(default="", description="15-character Indian GSTIN of the buyer / recipient")
+    invoice_date: str = Field(default="", description="Date of invoice issuance in YYYY-MM-DD format")
+    hsn_code: str = Field(default="", description="Primary 4 to 8 digit HSN/SAC code of the invoiced item")
+    taxable_value: float = Field(default=0.0, description="Total taxable subtotal before GST (raw float number only)")
+    cgst_amount: float = Field(default=0.0, description="Central GST (CGST) tax amount (raw float number only)")
+    sgst_amount: float = Field(default=0.0, description="State GST (SGST) tax amount (raw float number only)")
+    igst_amount: float = Field(default=0.0, description="Integrated GST (IGST) tax amount (raw float number only)")
+    total_tax: float = Field(default=0.0, description="Total GST amount (CGST + SGST + IGST) (raw float number only)")
+    total_amount: float = Field(default=0.0, description="Grand total invoice payable amount (raw float number only)")
 
-def extract_invoice_from_image(file_path_or_bytes, mime_type="image/jpeg", api_key=None) -> dict:
-    active_key = api_key or os.environ.get("GEMINI_API_KEY")
-    genai.configure(api_key=active_key)
+def clean_numeric_value(val) -> float:
+    """Strips currency symbols (₹, $, €, £), commas, and spaces using regex."""
+    if val is None or pd.isna(val):
+        return 0.0
+    if isinstance(val, (int, float)):
+        return 0.0 if np.isnan(val) else float(val)
+    val_str = str(val).strip()
+    if not val_str or val_str.lower() in ("none", "nan", "null", "n/a", "-", "--"):
+        return 0.0
+    cleaned = re.sub(r"(?i)[₹\\$,€£\\s]|inr|rs\\.?", "", val_str).strip()
+    match = re.search(r"[-+]?\\d*\\.?\\d+", cleaned)
+    if match:
+        try:
+            return float(match.group())
+        except (ValueError, TypeError):
+            return 0.0
+    return 0.0
 
-    if isinstance(file_path_or_bytes, str):
-        with open(file_path_or_bytes, "rb") as f:
-            data = f.read()
-    else:
-        data = file_path_or_bytes
+def clean_text_value(val, default: str = "") -> str:
+    """Strips whitespace, removes placeholders, returns clean string."""
+    if val is None or pd.isna(val):
+        return default
+    s = str(val).strip()
+    return default if (not s or s.lower() in ("none", "nan", "null", "n/a", "-")) else s
 
-    file_part = {"mime_type": mime_type, "data": data}
+def extract_invoice_details(uploaded_file, api_key: str = None) -> pd.DataFrame:
+    """
+    Accepts Streamlit file buffer or path (PNG, JPG, JPEG, PDF) and safely returns
+    a 1-row Pandas DataFrame ready for ML inference.
+    """
+    import streamlit as st
+
+    if uploaded_file is None:
+        st.error("No file provided. Please upload an invoice image or PDF.")
+        raise ValueError("Missing file buffer.")
+
+    try:
+        if hasattr(uploaded_file, "seek"):
+            uploaded_file.seek(0)
+        file_bytes = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
+        if hasattr(uploaded_file, "seek"):
+            uploaded_file.seek(0)
+        if not file_bytes:
+            st.error("Uploaded file buffer is empty (0 bytes).")
+            raise ValueError("Empty file.")
+    except Exception as read_err:
+        st.error(f"Failed to read file buffer: {read_err}")
+        raise RuntimeError(read_err)
+
+    active_key = api_key or os.environ.get("GEMINI_API_KEY") or getattr(st, "secrets", {}).get("GEMINI_API_KEY", "")
+    if not active_key:
+        st.error("API Key missing. Please provide GEMINI_API_KEY.")
+        raise ValueError("API Key missing.")
+
+    filename = getattr(uploaded_file, "name", "invoice.jpg").lower()
+    is_pdf = filename.endswith(".pdf")
+    mime_type = "application/pdf" if is_pdf else "image/jpeg"
+
     prompt = (
-        "You are an expert Indian GST Tax Auditor and Document OCR Specialist. "
-        "Extract the metadata and financial totals into the structured JSON schema. "
-        "Standardize numeric values as raw numbers without currency symbols (₹, $) or commas."
+        "Extract Indian GST invoice details into JSON schema. "
+        "Strictly return raw numbers for all numeric fields without currency symbols (₹, $), commas, or math."
     )
 
-    model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        generation_config=genai.GenerationConfig(
-            response_mime_type="application/json",
-            response_schema=ExtractedInvoiceSchema,
-            temperature=0.0,
-        ),
-    )
-    response = model.generate_content([prompt, file_part])
-    return json.loads(response.text)
+    extracted = {}
+    try:
+        if NEW_GENAI_AVAILABLE and genai is not None:
+            client = genai.Client(api_key=active_key)
+            if is_pdf:
+                doc_part = types.Part.from_bytes(data=file_bytes, mime_type="application/pdf")
+                contents = [prompt, doc_part]
+            else:
+                try:
+                    pil_img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+                    contents = [prompt, pil_img]
+                except Exception:
+                    contents = [prompt, types.Part.from_bytes(data=file_bytes, mime_type=mime_type)]
+
+            resp = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=ExtractedInvoiceSchema,
+                    temperature=0.0,
+                )
+            )
+            extracted = json.loads(resp.text.strip())
+        elif LEGACY_GENAI_AVAILABLE and genai_legacy is not None:
+            genai_legacy.configure(api_key=active_key)
+            model = genai_legacy.GenerativeModel(
+                model_name="gemini-1.5-flash",
+                generation_config=genai_legacy.GenerationConfig(
+                    response_mime_type="application/json",
+                    response_schema=ExtractedInvoiceSchema,
+                    temperature=0.0,
+                )
+            )
+            resp = model.generate_content([prompt, {"mime_type": mime_type, "data": file_bytes}])
+            extracted = json.loads(resp.text.strip())
+    except json.JSONDecodeError as j_err:
+        st.error(f"JSON Parse Error: {j_err}")
+        raise RuntimeError(j_err)
+    except Exception as api_err:
+        st.error(f"Vision API Error: {api_err}")
+        raise RuntimeError(api_err)
+
+    # Sanitize and build 1-row DataFrame
+    taxable_val = clean_numeric_value(extracted.get("taxable_value", 0.0))
+    cgst_amt = clean_numeric_value(extracted.get("cgst_amount", 0.0))
+    sgst_amt = clean_numeric_value(extracted.get("sgst_amount", 0.0))
+    igst_amt = clean_numeric_value(extracted.get("igst_amount", 0.0))
+    total_tax = clean_numeric_value(extracted.get("total_tax", 0.0)) or (cgst_amt + sgst_amt + igst_amt)
+    total_amt = clean_numeric_value(extracted.get("total_amount", 0.0)) or (taxable_val + total_tax)
+
+    cgst_rate = round((cgst_amt / taxable_val * 100.0), 2) if taxable_val > 0 else 0.0
+    sgst_rate = round((sgst_amt / taxable_val * 100.0), 2) if taxable_val > 0 else 0.0
+    igst_rate = round((igst_amt / taxable_val * 100.0), 2) if taxable_val > 0 else 0.0
+
+    row = {
+        "Invoice Number": clean_text_value(extracted.get("invoice_number"), "INV-001"),
+        "Supplier GSTIN": clean_text_value(extracted.get("supplier_gstin"), "07AAAAA0000A1Z5").upper(),
+        "Receiver GSTIN": clean_text_value(extracted.get("receiver_gstin"), "07BBBBB0000B1Z6").upper(),
+        "Invoice Date": clean_text_value(extracted.get("invoice_date"), "2026-03-15"),
+        "Line-Item HSN Code": clean_text_value(extracted.get("hsn_code"), "8471"),
+        "Taxable Value": taxable_val,
+        "CGST Rate": cgst_rate,
+        "SGST Rate": sgst_rate,
+        "IGST Rate": igst_rate,
+        "Total Tax": total_tax,
+        "Total Amount": total_amt,
+        "Payment Status": "Pending Verification",
+        "cgst_amount": cgst_amt,
+        "sgst_amount": sgst_amt,
+        "igst_amount": igst_amt,
+    }
+    df = pd.DataFrame([row])
+    df.attrs["extracted_dict"] = extracted
+    return df
 `;
 
   const generatorPyCode = `"""
@@ -329,6 +460,7 @@ numpy>=1.26.0
 scikit-learn>=1.4.0
 plotly>=5.22.0
 fpdf2>=2.7.9
+google-genai>=0.1.1
 google-generativeai>=0.8.0
 pydantic>=2.0.0
 pillow>=10.0.0
