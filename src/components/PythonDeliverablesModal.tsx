@@ -233,7 +233,10 @@ def evaluate_invoice_anomaly(
     scaler: StandardScaler,
     baseline_df: pd.DataFrame = None,
     min_score: float = -0.6,
-    max_score: float = 0.2
+    max_score: float = 0.2,
+    math_tolerance: float = 5.0,
+    tax_ratio_ceiling: float = 0.28,
+    hsn_zscore_thresh: float = 3.0
 ) -> dict:
     """Evaluates extracted invoice dictionary with Isolation Forest inference."""
     df = convert_extracted_json_to_df(extracted_data)
@@ -248,12 +251,62 @@ def evaluate_invoice_anomaly(
     return {
         "is_anomaly": pred == -1,
         "prediction": pred,
-        "status_badge": "High-risk Alert (-1 / Anomaly)" if pred == -1 else "Valid Invoice (1 / Normal)",
+        "status_badge": "High Risk Anomaly Detected (-1)" if pred == -1 else "Valid Invoice (1)",
         "raw_anomaly_score": raw_anomaly_score,
         "risk_score": risk_score,
-        "explanations": generate_human_readable_reasons(fe_df.iloc[0]),
-        "features": fe_df.iloc[0].to_dict()
+        "explanations": generate_human_readable_reasons(
+            fe_df.iloc[0],
+            math_tolerance=math_tolerance,
+            tax_ratio_ceiling=tax_ratio_ceiling,
+            hsn_zscore_thresh=hsn_zscore_thresh
+        ),
+        "features": fe_df.iloc[0].to_dict(),
+        "dataframe": df
     }
+
+def main():
+    st.title("🛡️ Enterprise GST Invoice Audit & Anomaly Intelligence")
+    st.markdown("Automated Compliance Audit & Anomaly Detection System with Document AI Engine and Isolation Forest.")
+
+    tab1, tab2, tab3 = st.tabs([
+        "📄 Single Invoice Scanner (OCR & ML Audit)",
+        "📊 Batch Processing & Analytics (CSV/JSON Files & Charts)",
+        "⚙️ Application Settings & Rule Engine (Contamination Rate, Thresholds)"
+    ])
+
+    with tab1:
+        st.markdown("### 📄 Single Invoice Scanner & Automated Compliance Audit")
+        col_left, col_right = st.columns([1, 1], gap="large")
+        with col_left:
+            st.markdown("#### 📤 Step 1: Upload Invoice Document")
+            uploaded_file = st.file_uploader("Select Invoice Document (PNG, JPG, JPEG, PDF)", type=["png", "jpg", "jpeg", "pdf"])
+            if uploaded_file is not None:
+                st.image(uploaded_file, caption=uploaded_file.name, use_container_width=True)
+                st.markdown("#### ⚡ Step 2: Trigger Document AI Extraction & Audit")
+                if st.button("🚀 Scan & Audit Invoice", type="primary", use_container_width=True):
+                    df_extracted = extract_invoice_details(uploaded_file)
+                    st.session_state["single_scan_data"] = df_extracted.attrs.get("extracted_dict", {})
+                    st.rerun()
+        with col_right:
+            st.markdown("#### 📋 Step 3: Extracted Invoice Data & Audit Outcome")
+            if "single_scan_data" in st.session_state:
+                # Step 3: Editable Form, Step 4: Anomaly Detection, Step 5: Display Risk Results
+                eval_res = evaluate_invoice_anomaly(st.session_state["single_scan_data"], model=iso_model, scaler=iso_scaler)
+                badge = "🚨 High Risk Anomaly Detected (-1)" if eval_res["is_anomaly"] else "✅ Valid Invoice (1)"
+                st.markdown(f"### {badge}")
+                for r in eval_res["explanations"]:
+                    st.error(r) if eval_res["is_anomaly"] else st.success(r)
+
+    with tab2:
+        st.markdown("### 📊 Batch Processing & Machine Learning Analytics")
+        # Bulk ingestion, KPIs, Plotly scatter & histogram charts, and investigation table
+
+    with tab3:
+        st.markdown("### ⚙️ Application Settings & Rule Engine Configuration")
+        # Contamination rate, n_estimators, math tolerance, and Document AI API credentials
+
+if __name__ == "__main__":
+    main()
 `;
 
   const ocrModuleCode = `"""
